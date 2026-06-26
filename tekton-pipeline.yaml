@@ -48,6 +48,7 @@ spec:
           '</settings>' > maven-settings.xml
         cd source
         chmod +x mvnw
+        unset MAVEN_CONFIG
         ./mvnw -B -DskipTests package
     - name: build-and-push
       image: quay.io/buildah/stable:v1.37.0
