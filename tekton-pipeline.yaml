@@ -37,15 +37,16 @@ spec:
         git checkout "$(params.git-revision)"
     - name: package
       image: maven:3.9.9-eclipse-temurin-21
-      workingDir: $(workspaces.source.path)/source
+      workingDir: $(workspaces.source.path)
       script: |
         #!/usr/bin/env sh
         set -eu
+        cd source
         chmod +x mvnw
         ./mvnw -B -DskipTests package
     - name: build-and-push
       image: quay.io/buildah/stable:v1.37.0
-      workingDir: $(workspaces.source.path)/source
+      workingDir: $(workspaces.source.path)
       securityContext:
         capabilities:
           add:
@@ -53,6 +54,7 @@ spec:
       script: |
         #!/usr/bin/env sh
         set -eu
+        cd source
         IMAGE="$(params.image-registry)/$(params.image-namespace)/$(params.app-name):$(params.image-tag)"
         TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
         buildah --storage-driver=vfs login --tls-verify=false -u pipeline -p "${TOKEN}" "$(params.image-registry)"
