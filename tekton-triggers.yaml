@@ -47,7 +47,7 @@ spec:
           - name: app-name
             value: $(tt.params.app-name)
           - name: image-tag
-            value: 1.0.0-SNAPSHOT
+            value: $(tt.params.git-revision)
         workspaces:
           - name: source
             volumeClaimTemplate:

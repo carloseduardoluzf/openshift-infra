@@ -1,7 +1,7 @@
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: quarkus-build-push-rollout
+  name: quarkus-build-push-gitops
   namespace: desafio-tam
   annotations:
     argocd.argoproj.io/sync-wave: "2"
@@ -22,6 +22,9 @@ spec:
     - name: image-namespace
       type: string
       default: desafio-tam
+    - name: gitops-owner
+      type: string
+      default: carloseduardoluzf
   workspaces:
     - name: source
   steps:
@@ -66,13 +69,46 @@ spec:
         buildah --storage-driver=vfs login --tls-verify=false -u pipeline -p "${TOKEN}" "$(params.image-registry)"
         buildah --storage-driver=vfs bud --isolation=chroot --tls-verify=false -f src/main/docker/Dockerfile.jvm -t "${IMAGE}" .
         buildah --storage-driver=vfs push --tls-verify=false "${IMAGE}"
-    - name: rollout
-      image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+    - name: update-gitops
+      image: alpine/git:2.45.2
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: GITHUB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: github-gitops-credentials
+              key: username
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: github-gitops-credentials
+              key: token
       script: |
         #!/usr/bin/env sh
         set -eu
-        oc rollout restart "deployment/$(params.app-name)" -n "$(params.image-namespace)"
-        oc rollout status "deployment/$(params.app-name)" -n "$(params.image-namespace)" --timeout=180s
+        APP="$(params.app-name)"
+        TAG="$(params.image-tag)"
+        IMAGE="$(params.image-registry)/$(params.image-namespace)/${APP}:${TAG}"
+        GITOPS_REPO="https://github.com/$(params.gitops-owner)/${APP}-gitops.git"
+
+        rm -rf gitops
+        printf 'machine github.com\nlogin %s\npassword %s\n' "${GITHUB_USERNAME}" "${GITHUB_TOKEN}" > "${HOME}/.netrc"
+        chmod 600 "${HOME}/.netrc"
+
+        git clone "${GITOPS_REPO}" gitops
+        cd gitops
+        git config user.name "tekton-pipeline"
+        git config user.email "tekton-pipeline@desafio-tam.local"
+        sed -i "s#image: image-registry.openshift-image-registry.svc:5000/desafio-tam/${APP}:.*#image: ${IMAGE}#" deployment.yaml
+
+        if git diff --quiet -- deployment.yaml; then
+          echo "deployment.yaml already points to ${IMAGE}"
+          exit 0
+        fi
+
+        git add deployment.yaml
+        git commit -m "deploy ${APP} ${TAG}"
+        git push origin main
 ---
 apiVersion: tekton.dev/v1
 kind: Pipeline
@@ -97,7 +133,7 @@ spec:
   tasks:
     - name: build-push-rollout
       taskRef:
-        name: quarkus-build-push-rollout
+        name: quarkus-build-push-gitops
       params:
         - name: git-url
           value: $(params.git-url)
