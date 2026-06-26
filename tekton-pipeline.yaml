@@ -1,0 +1,104 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: quarkus-build-push-rollout
+  namespace: desafio-tam
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  params:
+    - name: git-url
+      type: string
+    - name: git-revision
+      type: string
+    - name: app-name
+      type: string
+    - name: image-tag
+      type: string
+      default: 1.0.0-SNAPSHOT
+    - name: image-registry
+      type: string
+      default: image-registry.openshift-image-registry.svc:5000
+    - name: image-namespace
+      type: string
+      default: desafio-tam
+  workspaces:
+    - name: source
+  steps:
+    - name: clone
+      image: alpine/git:2.45.2
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env sh
+        set -eu
+        rm -rf source
+        git clone "$(params.git-url)" source
+        cd source
+        git checkout "$(params.git-revision)"
+    - name: package
+      image: maven:3.9.9-eclipse-temurin-21
+      workingDir: $(workspaces.source.path)/source
+      script: |
+        #!/usr/bin/env sh
+        set -eu
+        chmod +x mvnw
+        ./mvnw -B -DskipTests package
+    - name: build-and-push
+      image: quay.io/buildah/stable:v1.37.0
+      workingDir: $(workspaces.source.path)/source
+      securityContext:
+        capabilities:
+          add:
+            - SETFCAP
+      script: |
+        #!/usr/bin/env sh
+        set -eu
+        IMAGE="$(params.image-registry)/$(params.image-namespace)/$(params.app-name):$(params.image-tag)"
+        TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+        buildah --storage-driver=vfs login --tls-verify=false -u pipeline -p "${TOKEN}" "$(params.image-registry)"
+        buildah --storage-driver=vfs bud --isolation=chroot --tls-verify=false -f src/main/docker/Dockerfile.jvm -t "${IMAGE}" .
+        buildah --storage-driver=vfs push --tls-verify=false "${IMAGE}"
+    - name: rollout
+      image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+      script: |
+        #!/usr/bin/env sh
+        set -eu
+        oc rollout restart "deployment/$(params.app-name)" -n "$(params.image-namespace)"
+        oc rollout status "deployment/$(params.app-name)" -n "$(params.image-namespace)" --timeout=180s
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: quarkus-build-and-deploy
+  namespace: desafio-tam
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  params:
+    - name: git-url
+      type: string
+    - name: git-revision
+      type: string
+    - name: app-name
+      type: string
+    - name: image-tag
+      type: string
+      default: 1.0.0-SNAPSHOT
+  workspaces:
+    - name: source
+  tasks:
+    - name: build-push-rollout
+      taskRef:
+        name: quarkus-build-push-rollout
+      params:
+        - name: git-url
+          value: $(params.git-url)
+        - name: git-revision
+          value: $(params.git-revision)
+        - name: app-name
+          value: $(params.app-name)
+        - name: image-tag
+          value: $(params.image-tag)
+      workspaces:
+        - name: source
+          workspace: source
